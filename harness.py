@@ -284,6 +284,24 @@ def parse_model_spec(model_spec: str) -> tuple[str, dict | None]:
     return model_spec, None
 
 
+# Official providers for open-source models (restrict to these only)
+OFFICIAL_PROVIDERS = {
+    "moonshotai": "Moonshot",
+    "deepseek": "DeepSeek",
+    "z-ai": "Zhipu",
+    "zai": "Zhipu",
+}
+
+
+def get_official_provider(model: str) -> str | None:
+    """Get official provider for a model if it should be restricted."""
+    model_lower = model.lower()
+    for prefix, provider in OFFICIAL_PROVIDERS.items():
+        if model_lower.startswith(prefix + "/") or prefix in model_lower:
+            return provider
+    return None
+
+
 class LLMClient:
     """OpenRouter API client with sensible defaults."""
 
@@ -319,8 +337,16 @@ class LLMClient:
             else:
                 data["reasoning"] = reasoning_config
 
-        # Provider sorting (throughput = optimized providers first)
-        if self.provider_sort:
+        # Provider routing
+        official_provider = get_official_provider(model)
+        if official_provider:
+            # Restrict to official provider only
+            data["provider"] = {
+                "order": [official_provider],
+                "allow_fallbacks": False,
+            }
+        elif self.provider_sort:
+            # Use sorting preference
             data["provider"] = {"sort": self.provider_sort}
 
         for attempt in range(self.max_retries):
