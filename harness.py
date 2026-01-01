@@ -252,28 +252,34 @@ def parse_model_spec(model_spec: str) -> tuple[str, dict | None]:
     """
     Parse model specification with optional reasoning control suffix.
 
-    Format: model_id[:effort_or_tokens]
-    - Effort levels: low, medium, high, max (for OpenAI models)
+    Format: model_id[:effort_or_tokens_or_false]
+    - Effort levels: none, minimal, low, medium, high, xhigh (for OpenAI models)
     - Token count: integer (for Gemini/Anthropic models)
+    - false: Disable thinking (for models with thinking on by default)
 
     Examples:
         "openai/gpt-4o" -> ("openai/gpt-4o", None)
         "openai/o3-mini:high" -> ("openai/o3-mini", {"effort": "high"})
         "google/gemini-3-pro:16000" -> ("google/gemini-3-pro", {"max_tokens": 16000})
+        "z-ai/glm-4.7:false" -> ("z-ai/glm-4.7", {"disabled": True})
     """
-    valid_efforts = {"low", "medium", "high", "max"}
+    valid_efforts = {"none", "minimal", "low", "medium", "high", "xhigh"}
 
     if ":" in model_spec:
         parts = model_spec.rsplit(":", 1)
         suffix = parts[1].lower()
 
-        # Check if it's an effort level
+        # Check if it's an effort level (check first, before disabled)
         if suffix in valid_efforts:
             return parts[0], {"effort": suffix}
 
         # Check if it's a token count
         if suffix.isdigit():
             return parts[0], {"max_tokens": int(suffix)}
+
+        # Check if it's disabling thinking
+        if suffix in {"false", "off", "disabled"}:
+            return parts[0], {"disabled": True}
 
     return model_spec, None
 
@@ -305,9 +311,13 @@ class LLMClient:
             "include_reasoning": True,
         }
 
-        # Reasoning control: effort (OpenAI) or max_tokens (Gemini/Anthropic)
+        # Reasoning control: effort (OpenAI), max_tokens (Gemini/Anthropic), or disabled
         if reasoning_config:
-            data["reasoning"] = reasoning_config
+            if reasoning_config.get("disabled"):
+                # Disable thinking/reasoning
+                data["reasoning"] = {"enabled": False}
+            else:
+                data["reasoning"] = reasoning_config
 
         # Provider sorting (throughput = optimized providers first)
         if self.provider_sort:
@@ -557,7 +567,10 @@ async def run_harness(args: argparse.Namespace):
         model, reasoning_config = parse_model_spec(model_spec)
         model_name = model.split("/")[-1] if "/" in model else model
         if reasoning_config:
-            cfg_str = reasoning_config.get("effort") or str(reasoning_config.get("max_tokens", ""))
+            if reasoning_config.get("disabled"):
+                cfg_str = "off"
+            else:
+                cfg_str = reasoning_config.get("effort") or str(reasoning_config.get("max_tokens", ""))
             model_name = f"{model_name}:{cfg_str}"
         for prompt_data in prompts[:args.limit] if args.limit > 0 else prompts:
             prompt_id = prompt_data.get("prompt_id", prompt_data.get("id", "unknown"))
@@ -760,7 +773,10 @@ def get_model_prefix(model_spec: str) -> str:
     name = model.split("/")[-1] if "/" in model else model
     # Add reasoning suffix if present
     if reasoning_config:
-        suffix = reasoning_config.get("effort") or str(reasoning_config.get("max_tokens", ""))
+        if reasoning_config.get("disabled"):
+            suffix = "off"
+        else:
+            suffix = reasoning_config.get("effort") or str(reasoning_config.get("max_tokens", ""))
         name = f"{name}_{suffix}"
     return name
 
