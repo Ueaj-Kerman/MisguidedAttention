@@ -21,6 +21,7 @@ COLOR_PALETTES = {
     "xai": ["#606060", "#4a4a4a", "#3a3a3a", "#2a2a2a", "#1a1a1a"],         # Black/dark gray
     "kimi": ["#d8b8e8", "#c99bd8", "#ba7ec8", "#ab61b8", "#9c44a8"],        # Purple
     "zai": ["#e0c0f0", "#d1a3e1", "#c286d2", "#b369c3", "#a44cb4"],         # Purple (similar to kimi)
+    "arcee": ["#fff9b0", "#fff176", "#ffeb3b", "#fdd835", "#f9a825"],       # Yellow
     "default": ["#d0d0d0", "#b0b0b0", "#909090", "#707070", "#505050"],     # Grays
 }
 
@@ -40,8 +41,10 @@ def get_provider(model_name: str) -> str:
         return "xai"
     if any(x in name_lower for x in ["kimi", "moonshot"]):
         return "kimi"
-    if any(x in name_lower for x in ["z.ai", "zai"]):
+    if any(x in name_lower for x in ["glm", "z.ai", "zai"]):
         return "zai"
+    if any(x in name_lower for x in ["arcee", "trinity"]):
+        return "arcee"
     return "default"
 
 
@@ -153,10 +156,11 @@ def plot_results(models: dict, theme: str, output_path: str):
     providers_in_plot = set(m[1]["provider"] for m in sorted_models)
     provider_labels = {
         "openai": "OpenAI", "anthropic": "Anthropic", "google": "Google",
-        "deepseek": "DeepSeek", "xai": "xAI", "kimi": "Kimi", "zai": "Z.ai"
+        "deepseek": "DeepSeek", "xai": "xAI", "kimi": "Kimi", "zai": "Z.ai",
+        "arcee": "Arcee"
     }
     legend_elements = [Patch(facecolor=COLOR_PALETTES[p][1], edgecolor=edge_color, label=provider_labels.get(p, p))
-                       for p in ["openai", "anthropic", "google", "deepseek", "xai", "kimi", "zai"]
+                       for p in ["openai", "anthropic", "google", "deepseek", "xai", "kimi", "zai", "arcee"]
                        if p in providers_in_plot]
     if legend_elements:
         ax.legend(handles=legend_elements, loc="lower right", fontsize=9)
