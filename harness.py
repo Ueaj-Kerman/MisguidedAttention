@@ -709,11 +709,28 @@ async def run_harness(args: argparse.Namespace):
         pbar.close()
 
     print(f"\nCompleted. Final score: {score_tracker.average:.1%} ({score_tracker.count} graded)")
-    save_json(progress.to_dict(), args.output)
 
-    grouped_path = args.output.replace(".json", "_grouped.json")
-    save_json(progress.to_grouped_results(), grouped_path)
-    print(f"Saved grouped format to {grouped_path}")
+    # Save final results
+    results_file = getattr(args, 'results_file', args.output.replace("_progress.json", "_results.json"))
+    save_json(progress.to_grouped_results(), results_file)
+    print(f"Saved results to {results_file}")
+
+    # Delete progress file on successful completion
+    if os.path.exists(args.output) and args.output != results_file:
+        os.remove(args.output)
+        print(f"Cleaned up {args.output}")
+
+
+def get_model_prefix(model_spec: str) -> str:
+    """Generate filename prefix from model spec (e.g., 'openai/o3-mini:high' -> 'o3-mini_high')."""
+    model, reasoning_config = parse_model_spec(model_spec)
+    # Get just the model name (after last /)
+    name = model.split("/")[-1] if "/" in model else model
+    # Add reasoning suffix if present
+    if reasoning_config:
+        suffix = reasoning_config.get("effort") or str(reasoning_config.get("max_tokens", ""))
+        name = f"{name}_{suffix}"
+    return name
 
 
 def main():
@@ -726,12 +743,16 @@ Examples:
   python harness.py --long --models openai/gpt-4o anthropic/claude-sonnet-4 --samples 3
   python harness.py --models openai/o3-mini:high openai/o3-mini:low
   python harness.py --models meta-llama/llama-3.1-70b-instruct --provider-sort throughput
+
+Output files:
+  {model}_progress.json  - Intermediate progress (deleted on completion)
+  {model}_results.json   - Final grouped results
         """,
     )
     parser.add_argument("--dataset", default="data/misguided_attention_v4.scr", help="Path to dataset (.json or .scr)")
     parser.add_argument("--long", action="store_true", help="Use long dataset (data/misguided_attention_v4_long.scr)")
     parser.add_argument("--models", required=True, nargs="+", help="Model IDs (e.g., google/gemini-2.5-pro)")
-    parser.add_argument("--output", default="progress.json", help="Output file path")
+    parser.add_argument("--output-dir", default=".", help="Output directory for results")
     parser.add_argument("--samples", type=int, default=1, help="Samples per prompt-model pair")
     parser.add_argument("--limit", type=int, default=0, help="Limit prompts (0=all)")
     parser.add_argument("--concurrency", type=int, default=10, help="Max concurrent requests")
@@ -744,7 +765,26 @@ Examples:
     args = parser.parse_args()
     if args.long:
         args.dataset = "data/misguided_attention_v4_long.scr"
-    asyncio.run(run_harness(args))
+
+    # Run each model separately with its own output files
+    for model_spec in args.models:
+        prefix = get_model_prefix(model_spec)
+        progress_file = os.path.join(args.output_dir, f"{prefix}_progress.json")
+        results_file = os.path.join(args.output_dir, f"{prefix}_results.json")
+
+        # Create a copy of args for this model
+        model_args = argparse.Namespace(**vars(args))
+        model_args.models = [model_spec]
+        model_args.output = progress_file
+        model_args.results_file = results_file
+
+        print(f"\n{'='*60}")
+        print(f"Evaluating: {model_spec}")
+        print(f"Progress: {progress_file}")
+        print(f"Results: {results_file}")
+        print(f"{'='*60}\n")
+
+        asyncio.run(run_harness(model_args))
 
 
 if __name__ == "__main__":
