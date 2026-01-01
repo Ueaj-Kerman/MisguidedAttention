@@ -285,11 +285,11 @@ def parse_model_spec(model_spec: str) -> tuple[str, dict | None]:
 
 
 # Official providers for open-source models (restrict to these only)
+# Provider names from OpenRouter API /models/{id}/endpoints
 OFFICIAL_PROVIDERS = {
-    "moonshotai": "Moonshot",
-    "deepseek": "DeepSeek",
-    "z-ai": "Zhipu",
-    "zai": "Zhipu",
+    "moonshotai": "Moonshot AI",  # Kimi models
+    "z-ai": "Z.AI",               # GLM models
+    # Note: DeepSeek has no official provider on OpenRouter (only third-party hosts)
 }
 
 
