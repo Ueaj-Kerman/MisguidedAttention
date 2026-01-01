@@ -65,10 +65,13 @@ def load_results(results_dir: str) -> dict[str, dict]:
                     all_scores.append(s)
 
         if all_scores:
+            n = len(all_scores)
+            std = np.std(all_scores)
             models[model_name] = {
                 "mean": np.mean(all_scores),
-                "std": np.std(all_scores),
-                "n": len(all_scores),
+                "std": std,
+                "sem": std / np.sqrt(n),  # Standard error of mean
+                "n": n,
                 "provider": get_provider(model_name),
             }
 
@@ -115,28 +118,29 @@ def plot_results(models: dict, theme: str, output_path: str):
     sorted_models = sorted(models.items(), key=lambda x: x[1]["mean"], reverse=True)
     names = [m[0] for m in sorted_models]
     means = [m[1]["mean"] for m in sorted_models]
-    stds = [m[1]["std"] for m in sorted_models]
+    sems = [m[1]["sem"] for m in sorted_models]  # Use SEM instead of STD
     colors = assign_colors(sorted_models)
 
     fig, ax = plt.subplots(figsize=(12, max(6, len(names) * 0.4)))
 
     y_pos = np.arange(len(names))
 
-    # Horizontal bar chart
-    bars = ax.barh(y_pos, means, xerr=stds, capsize=4, color=colors,
-                   edgecolor=edge_color, linewidth=0.5, alpha=0.85)
+    # Horizontal bar chart with error bars matching theme
+    bars = ax.barh(y_pos, means, xerr=sems, capsize=4, color=colors,
+                   edgecolor=edge_color, linewidth=0.5, alpha=0.85,
+                   error_kw={"ecolor": edge_color, "capthick": 1.5})
 
     ax.set_yticks(y_pos)
     ax.set_yticklabels(names, fontsize=10)
     ax.invert_yaxis()  # Highest score at top
     ax.set_xlabel("Overall Score", fontsize=12)
     ax.set_xlim(0, 1.05)
-    ax.set_title("Model Performance (mean ± std)", fontsize=14, fontweight="bold")
+    ax.set_title("Model Performance (mean ± SEM)", fontsize=14, fontweight="bold")
 
     # Add score labels on bars
-    for i, (bar, mean, std) in enumerate(zip(bars, means, stds)):
+    for i, (bar, mean, sem) in enumerate(zip(bars, means, sems)):
         label = f"{mean:.1%}"
-        x_pos = min(mean + std + 0.02, 0.95)
+        x_pos = min(mean + sem + 0.02, 0.95)
         ax.text(x_pos, bar.get_y() + bar.get_height()/2, label,
                 va="center", ha="left", fontsize=9, color=text_color)
 
@@ -182,7 +186,7 @@ def main():
 
     print(f"Found {len(models)} models:")
     for name, stats in sorted(models.items(), key=lambda x: x[1]["mean"], reverse=True):
-        print(f"  {name}: {stats['mean']:.1%} ± {stats['std']:.1%} (n={stats['n']})")
+        print(f"  {name}: {stats['mean']:.1%} ± {stats['sem']:.1%} (n={stats['n']})")
 
     # Generate both themes
     plot_results(models, "light", os.path.join(output_dir, "scores_light.png"))
