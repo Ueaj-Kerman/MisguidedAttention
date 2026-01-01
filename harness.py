@@ -830,7 +830,7 @@ Output files:
     parser.add_argument("--samples", type=int, default=1, help="Samples per prompt-model pair")
     parser.add_argument("--limit", type=int, default=0, help="Limit prompts (0=all)")
     parser.add_argument("--concurrency", type=int, default=10, help="Max concurrent requests")
-    parser.add_argument("--max-retries", type=int, default=4, help="Max retries per request")
+    parser.add_argument("--max-retries", type=int, default=2, help="Max retries per request")
     parser.add_argument("--provider-sort", choices=["price", "throughput", "latency"],
                         help="Sort providers (throughput = optimized providers first)")
     parser.add_argument("--grader", default=DEFAULT_GRADER_MODEL, help="Model for grading responses")
