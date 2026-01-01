@@ -8,5 +8,17 @@ models.js
 responses.js
 data.js
 
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
+
+# Output files
+*_progress.json
+*_progress_grouped.json
+
 
 
