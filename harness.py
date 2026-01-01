@@ -504,10 +504,10 @@ async def grade_result(
             else:
                 result.overall_score = sum(scores) / len(scores) if scores else 0.0
         else:
-            # Grading failed
-            result.criteria_scores = None
-            result.criteria_explanations = None
-            result.overall_score = None
+            # Grading failed - score as 0
+            result.criteria_scores = [0.0] * len(criteria)
+            result.criteria_explanations = ["Grading failed"] * len(criteria)
+            result.overall_score = 0.0
 
         return result
 
@@ -721,6 +721,38 @@ async def run_harness(args: argparse.Namespace):
         print(f"Cleaned up {args.output}")
 
 
+def export_partial_results(progress_file: str, results_file: str):
+    """Export progress file as results, scoring ungraded items as 0."""
+    if not os.path.exists(progress_file):
+        print(f"Error: {progress_file} not found")
+        return False
+
+    progress = load_progress(progress_file)
+    print(f"Loaded {len(progress.results)} results from {progress_file}")
+
+    # Score ungraded results as 0
+    ungraded_count = 0
+    for result in progress.results.values():
+        if not result.is_graded():
+            result.overall_score = 0.0
+            result.criteria_scores = [0.0]
+            result.criteria_explanations = ["Ungraded - scored as 0"]
+            ungraded_count += 1
+
+    if ungraded_count:
+        print(f"Scored {ungraded_count} ungraded results as 0")
+
+    # Calculate final score
+    scores = [r.overall_score for r in progress.results.values() if r.overall_score is not None]
+    avg_score = sum(scores) / len(scores) if scores else 0.0
+    print(f"Final score: {avg_score:.1%} ({len(scores)} results)")
+
+    # Save as results file
+    save_json(progress.to_grouped_results(), results_file)
+    print(f"Saved: {results_file}")
+    return True
+
+
 def get_model_prefix(model_spec: str) -> str:
     """Generate filename prefix from model spec (e.g., 'openai/o3-mini:high' -> 'o3-mini_high')."""
     model, reasoning_config = parse_model_spec(model_spec)
@@ -751,20 +783,34 @@ Output files:
     )
     parser.add_argument("--dataset", default="data/misguided_attention_v4.scr", help="Path to dataset (.json or .scr)")
     parser.add_argument("--long", action="store_true", help="Use long dataset (data/misguided_attention_v4_long.scr)")
-    parser.add_argument("--models", required=True, nargs="+", help="Model IDs (e.g., google/gemini-2.5-pro)")
+    parser.add_argument("--models", nargs="+", help="Model IDs (e.g., google/gemini-2.5-pro)")
     parser.add_argument("--output-dir", default="results", help="Output directory for results")
     parser.add_argument("--samples", type=int, default=1, help="Samples per prompt-model pair")
     parser.add_argument("--limit", type=int, default=0, help="Limit prompts (0=all)")
     parser.add_argument("--concurrency", type=int, default=10, help="Max concurrent requests")
-    parser.add_argument("--max-retries", type=int, default=8, help="Max retries per request")
+    parser.add_argument("--max-retries", type=int, default=4, help="Max retries per request")
     parser.add_argument("--provider-sort", choices=["price", "throughput", "latency"],
                         help="Sort providers (throughput = optimized providers first)")
     parser.add_argument("--grader", default=DEFAULT_GRADER_MODEL, help="Model for grading responses")
     parser.add_argument("--debug", action="store_true", help="Debug output")
+    parser.add_argument("--export-partial", metavar="PROGRESS_FILE",
+                        help="Export a progress file as results, scoring ungraded as 0")
 
     args = parser.parse_args()
+
+    # Handle export-partial mode
+    if args.export_partial:
+        progress_file = args.export_partial
+        results_file = progress_file.replace("_progress.json", "_results.json")
+        export_partial_results(progress_file, results_file)
+        return
+
     if args.long:
         args.dataset = "data/misguided_attention_v4_long.scr"
+
+    # Require --models for normal operation
+    if not args.models:
+        parser.error("--models is required")
 
     # Create output directory if needed
     os.makedirs(args.output_dir, exist_ok=True)
