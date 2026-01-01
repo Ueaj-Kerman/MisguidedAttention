@@ -9,13 +9,14 @@ Usage:
                       --models google/gemini-2.5-pro openai/gpt-4o \
                       --samples 3 --concurrency 20
 
-Model syntax supports reasoning effort suffix:
-    model_id:effort  where effort is low/medium/high/max
+Model syntax supports reasoning control suffix:
+    model_id:effort   - effort level (low/medium/high/max) for OpenAI models
+    model_id:NUMBER   - max thinking tokens for Gemini/Anthropic models
 
     Examples:
         openai/o3-mini:high
-        openai/gpt-5:max
-        anthropic/claude-sonnet-4:low
+        google/gemini-3-pro-preview:16000
+        anthropic/claude-sonnet-4:10000
 """
 
 import argparse
@@ -215,25 +216,32 @@ def extract_thinking(text: str) -> tuple[str, str | None]:
     return pattern.sub("", text).strip(), thinking
 
 
-def parse_model_spec(model_spec: str) -> tuple[str, str | None]:
+def parse_model_spec(model_spec: str) -> tuple[str, dict | None]:
     """
-    Parse model specification with optional reasoning effort suffix.
+    Parse model specification with optional reasoning control suffix.
 
-    Format: model_id[:effort]
-    Effort levels: low, medium, high, max
+    Format: model_id[:effort_or_tokens]
+    - Effort levels: low, medium, high, max (for OpenAI models)
+    - Token count: integer (for Gemini/Anthropic models)
 
     Examples:
         "openai/gpt-4o" -> ("openai/gpt-4o", None)
-        "openai/o3-mini:high" -> ("openai/o3-mini", "high")
-        "anthropic/claude-sonnet-4:max" -> ("anthropic/claude-sonnet-4", "max")
+        "openai/o3-mini:high" -> ("openai/o3-mini", {"effort": "high"})
+        "google/gemini-3-pro:16000" -> ("google/gemini-3-pro", {"max_tokens": 16000})
     """
     valid_efforts = {"low", "medium", "high", "max"}
 
     if ":" in model_spec:
-        # Check if last part after : is an effort level
         parts = model_spec.rsplit(":", 1)
-        if parts[1].lower() in valid_efforts:
-            return parts[0], parts[1].lower()
+        suffix = parts[1].lower()
+
+        # Check if it's an effort level
+        if suffix in valid_efforts:
+            return parts[0], {"effort": suffix}
+
+        # Check if it's a token count
+        if suffix.isdigit():
+            return parts[0], {"max_tokens": int(suffix)}
 
     return model_spec, None
 
@@ -251,7 +259,7 @@ class LLMClient:
             print("Set it with: export OPENROUTER_API_KEY='your-key'")
             raise SystemExit(1)
 
-    async def query(self, prompt: str, model: str, reasoning_effort: str | None = None) -> dict | None:
+    async def query(self, prompt: str, model: str, reasoning_config: dict | None = None) -> dict | None:
         """Query OpenRouter with model defaults."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -265,9 +273,9 @@ class LLMClient:
             "include_reasoning": True,
         }
 
-        # Reasoning effort control (for o-series, gpt-5, claude, etc.)
-        if reasoning_effort:
-            data["reasoning"] = {"effort": reasoning_effort}
+        # Reasoning control: effort (OpenAI) or max_tokens (Gemini/Anthropic)
+        if reasoning_config:
+            data["reasoning"] = reasoning_config
 
         # Provider sorting (throughput = optimized providers first)
         if self.provider_sort:
@@ -340,12 +348,12 @@ async def run_single_task(
     key: TaskKey,
     prompt: str,
     model: str,
-    reasoning_effort: str | None = None,
+    reasoning_config: dict | None = None,
 ) -> TaskResult:
     """Execute a single evaluation task."""
     async with semaphore:
         try:
-            response = await client.query(prompt, model, reasoning_effort)
+            response = await client.query(prompt, model, reasoning_config)
             if response is None:
                 return TaskResult(key=key, prompt=prompt, error="Failed to get response")
             return TaskResult(
@@ -369,21 +377,23 @@ async def run_harness(args: argparse.Namespace):
     print(f"Loaded {len(progress.results)} existing results from {args.output}")
 
     # Build task queue
-    tasks_to_run: list[tuple[TaskKey, str, str, str | None]] = []
+    tasks_to_run: list[tuple[TaskKey, str, str, dict | None]] = []
     for model_spec in args.models:
-        # Parse model:effort syntax
-        model, reasoning_effort = parse_model_spec(model_spec)
-        # Use model ID as display name (last part after /, plus effort if specified)
+        # Parse model:config syntax
+        model, reasoning_config = parse_model_spec(model_spec)
+        # Use model ID as display name (last part after /, plus config if specified)
         model_name = model.split("/")[-1] if "/" in model else model
-        if reasoning_effort:
-            model_name = f"{model_name}:{reasoning_effort}"
+        if reasoning_config:
+            # Format: model:high or model:16000
+            cfg_str = reasoning_config.get("effort") or str(reasoning_config.get("max_tokens", ""))
+            model_name = f"{model_name}:{cfg_str}"
         for prompt_data in prompts[:args.limit] if args.limit > 0 else prompts:
             prompt_id = prompt_data.get("prompt_id", prompt_data.get("id", "unknown"))
             prompt_text = prompt_data.get("prompt", prompt_data.get("text", ""))
             for sample_idx in range(args.samples):
                 key = TaskKey(prompt_id, model_name, sample_idx)
                 if not progress.has_result(key):
-                    tasks_to_run.append((key, prompt_text, model, reasoning_effort))
+                    tasks_to_run.append((key, prompt_text, model, reasoning_config))
 
     total_tasks = len(tasks_to_run)
     print(f"Total tasks to run: {total_tasks}")
@@ -404,9 +414,9 @@ async def run_harness(args: argparse.Namespace):
             nonlocal task_iter
             while len(current_pending) < args.concurrency:
                 try:
-                    key, prompt_text, model, reasoning_effort = next(task_iter)
+                    key, prompt_text, model, reasoning_config = next(task_iter)
                     task = asyncio.create_task(
-                        run_single_task(client, semaphore, key, prompt_text, model, reasoning_effort)
+                        run_single_task(client, semaphore, key, prompt_text, model, reasoning_config)
                     )
                     task.task_key = key  # type: ignore
                     current_pending.add(task)
