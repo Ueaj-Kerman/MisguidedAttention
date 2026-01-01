@@ -8,6 +8,14 @@ Usage:
     python harness.py --dataset data/misguided_attention_v4.scr \
                       --models google/gemini-2.5-pro openai/gpt-4o \
                       --samples 3 --concurrency 20
+
+Model syntax supports reasoning effort suffix:
+    model_id:effort  where effort is low/medium/high/max
+
+    Examples:
+        openai/o3-mini:high
+        openai/gpt-5:max
+        anthropic/claude-sonnet-4:low
 """
 
 import argparse
@@ -207,6 +215,29 @@ def extract_thinking(text: str) -> tuple[str, str | None]:
     return pattern.sub("", text).strip(), thinking
 
 
+def parse_model_spec(model_spec: str) -> tuple[str, str | None]:
+    """
+    Parse model specification with optional reasoning effort suffix.
+
+    Format: model_id[:effort]
+    Effort levels: low, medium, high, max
+
+    Examples:
+        "openai/gpt-4o" -> ("openai/gpt-4o", None)
+        "openai/o3-mini:high" -> ("openai/o3-mini", "high")
+        "anthropic/claude-sonnet-4:max" -> ("anthropic/claude-sonnet-4", "max")
+    """
+    valid_efforts = {"low", "medium", "high", "max"}
+
+    if ":" in model_spec:
+        # Check if last part after : is an effort level
+        parts = model_spec.rsplit(":", 1)
+        if parts[1].lower() in valid_efforts:
+            return parts[0], parts[1].lower()
+
+    return model_spec, None
+
+
 class LLMClient:
     """OpenRouter API client with sensible defaults."""
 
@@ -218,7 +249,7 @@ class LLMClient:
         if not self.api_key:
             raise ValueError("OPENROUTER_API_KEY environment variable not set")
 
-    async def query(self, prompt: str, model: str) -> dict | None:
+    async def query(self, prompt: str, model: str, reasoning_effort: str | None = None) -> dict | None:
         """Query OpenRouter with model defaults."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -231,6 +262,10 @@ class LLMClient:
             "messages": [{"role": "user", "content": f"Please answer the following question: {prompt}\nAnswer:"}],
             "include_reasoning": True,
         }
+
+        # Reasoning effort control (for o-series, gpt-5, claude, etc.)
+        if reasoning_effort:
+            data["reasoning"] = {"effort": reasoning_effort}
 
         # Provider sorting (throughput = optimized providers first)
         if self.provider_sort:
@@ -291,11 +326,12 @@ async def run_single_task(
     key: TaskKey,
     prompt: str,
     model: str,
+    reasoning_effort: str | None = None,
 ) -> TaskResult:
     """Execute a single evaluation task."""
     async with semaphore:
         try:
-            response = await client.query(prompt, model)
+            response = await client.query(prompt, model, reasoning_effort)
             if response is None:
                 return TaskResult(key=key, prompt=prompt, error="Failed to get response")
             return TaskResult(
@@ -319,17 +355,21 @@ async def run_harness(args: argparse.Namespace):
     print(f"Loaded {len(progress.results)} existing results from {args.output}")
 
     # Build task queue
-    tasks_to_run: list[tuple[TaskKey, str, str]] = []
-    for model in args.models:
-        # Use model ID as display name (last part after /)
+    tasks_to_run: list[tuple[TaskKey, str, str, str | None]] = []
+    for model_spec in args.models:
+        # Parse model:effort syntax
+        model, reasoning_effort = parse_model_spec(model_spec)
+        # Use model ID as display name (last part after /, plus effort if specified)
         model_name = model.split("/")[-1] if "/" in model else model
+        if reasoning_effort:
+            model_name = f"{model_name}:{reasoning_effort}"
         for prompt_data in prompts[:args.limit] if args.limit > 0 else prompts:
             prompt_id = prompt_data.get("prompt_id", prompt_data.get("id", "unknown"))
             prompt_text = prompt_data.get("prompt", prompt_data.get("text", ""))
             for sample_idx in range(args.samples):
                 key = TaskKey(prompt_id, model_name, sample_idx)
                 if not progress.has_result(key):
-                    tasks_to_run.append((key, prompt_text, model))
+                    tasks_to_run.append((key, prompt_text, model, reasoning_effort))
 
     total_tasks = len(tasks_to_run)
     print(f"Total tasks to run: {total_tasks}")
@@ -350,9 +390,9 @@ async def run_harness(args: argparse.Namespace):
             nonlocal task_iter
             while len(current_pending) < args.concurrency:
                 try:
-                    key, prompt_text, model = next(task_iter)
+                    key, prompt_text, model, reasoning_effort = next(task_iter)
                     task = asyncio.create_task(
-                        run_single_task(client, semaphore, key, prompt_text, model)
+                        run_single_task(client, semaphore, key, prompt_text, model, reasoning_effort)
                     )
                     task.task_key = key  # type: ignore
                     current_pending.add(task)
@@ -409,7 +449,8 @@ def main():
         epilog="""
 Examples:
   python harness.py --dataset data/prompts.scr --models google/gemini-2.5-pro
-  python harness.py --dataset data/prompts.json --models openai/gpt-4o anthropic/claude-3.5-sonnet --samples 3
+  python harness.py --dataset data/prompts.json --models openai/gpt-4o anthropic/claude-sonnet-4 --samples 3
+  python harness.py --dataset data/prompts.scr --models openai/o3-mini:high openai/o3-mini:low
   python harness.py --dataset data/prompts.scr --models meta-llama/llama-3.1-70b-instruct --provider-sort throughput
         """,
     )
