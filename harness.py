@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Async evaluation harness with progress tracking and resumable state.
+Async evaluation harness with progress tracking, grading, and resumable state.
 
 Uses OpenRouter with sensible defaults. No config files needed.
+Concurrently collects responses AND grades them using an LLM judge.
 
 Usage:
     python harness.py --dataset data/misguided_attention_v4.scr \
@@ -30,6 +31,9 @@ from datetime import datetime
 import aiohttp
 from tqdm import tqdm
 
+# Default grading model (fast and cheap)
+DEFAULT_GRADER_MODEL = "openai/gpt-4.1-nano"
+
 
 @dataclass
 class TaskKey:
@@ -47,7 +51,7 @@ class TaskKey:
 
 @dataclass
 class TaskResult:
-    """Result of a single evaluation task."""
+    """Result of a single evaluation task with optional grading."""
     key: TaskKey
     prompt: str
     content: str | None = None
@@ -56,6 +60,13 @@ class TaskResult:
     completion_tokens_details: dict | None = None
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     error: str | None = None
+    # Grading fields
+    criteria_scores: list[float] | None = None  # Score per criterion (0.0 or 1.0)
+    criteria_explanations: list[str] | None = None  # Explanation per criterion
+    overall_score: float | None = None  # Weighted average
+
+    def is_graded(self) -> bool:
+        return self.overall_score is not None
 
     def to_dict(self) -> dict:
         return {
@@ -67,6 +78,9 @@ class TaskResult:
             "completion_tokens_details": self.completion_tokens_details,
             "timestamp": self.timestamp,
             "error": self.error,
+            "criteria_scores": self.criteria_scores,
+            "criteria_explanations": self.criteria_explanations,
+            "overall_score": self.overall_score,
         }
 
 
@@ -78,6 +92,9 @@ class Progress:
 
     def add_result(self, result: TaskResult):
         self.results[result.key.to_tuple()] = result
+
+    def get_result(self, key: TaskKey) -> TaskResult | None:
+        return self.results.get(key.to_tuple())
 
     def has_result(self, key: TaskKey) -> bool:
         return key.to_tuple() in self.results
@@ -102,6 +119,8 @@ class Progress:
                     "thinking": [],
                     "tokens_completion": [],
                     "completion_tokens_details": [],
+                    "criteria_scores": [],
+                    "overall_score": [],
                     "timestamp": result.timestamp,
                 }
             g = grouped[group_key]
@@ -110,16 +129,22 @@ class Progress:
                 g["thinking"].append(None)
                 g["tokens_completion"].append(None)
                 g["completion_tokens_details"].append(None)
+                g["criteria_scores"].append(None)
+                g["overall_score"].append(None)
             if len(g["output"]) == result.key.sample_idx:
                 g["output"].append(result.content)
                 g["thinking"].append(result.thinking)
                 g["tokens_completion"].append(result.tokens_completion)
                 g["completion_tokens_details"].append(result.completion_tokens_details)
+                g["criteria_scores"].append(result.criteria_scores)
+                g["overall_score"].append(result.overall_score)
             else:
                 g["output"][result.key.sample_idx] = result.content
                 g["thinking"][result.key.sample_idx] = result.thinking
                 g["tokens_completion"][result.key.sample_idx] = result.tokens_completion
                 g["completion_tokens_details"][result.key.sample_idx] = result.completion_tokens_details
+                g["criteria_scores"][result.key.sample_idx] = result.criteria_scores
+                g["overall_score"][result.key.sample_idx] = result.overall_score
             g["timestamp"] = max(g["timestamp"], result.timestamp)
         return {"results": list(grouped.values())}
 
@@ -138,6 +163,9 @@ class Progress:
                 completion_tokens_details=r.get("completion_tokens_details"),
                 timestamp=r.get("timestamp", datetime.now().isoformat()),
                 error=r.get("error"),
+                criteria_scores=r.get("criteria_scores"),
+                criteria_explanations=r.get("criteria_explanations"),
+                overall_score=r.get("overall_score"),
             )
             progress.add_result(result)
         return progress
@@ -153,6 +181,8 @@ class Progress:
             thinkings = r.get("thinking", [])
             tokens = r.get("tokens_completion", [])
             details = r.get("completion_tokens_details", [])
+            crit_scores = r.get("criteria_scores", [])
+            overall_scores = r.get("overall_score", [])
             timestamp = r.get("timestamp", datetime.now().isoformat())
             for i, output in enumerate(outputs):
                 if output is not None:
@@ -162,6 +192,8 @@ class Progress:
                         thinking=thinkings[i] if i < len(thinkings) else None,
                         tokens_completion=tokens[i] if i < len(tokens) else None,
                         completion_tokens_details=details[i] if i < len(details) else None,
+                        criteria_scores=crit_scores[i] if i < len(crit_scores) else None,
+                        overall_score=overall_scores[i] if i < len(overall_scores) else None,
                         timestamp=timestamp,
                     )
                     progress.add_result(result)
@@ -341,6 +373,69 @@ class LLMClient:
                     return None
         return None
 
+    async def grade(self, prompt: str, response: str, criteria: list[str], model: str) -> dict | None:
+        """Grade a response against criteria using LLM judge."""
+        grading_prompt = f"""You are evaluating an AI model's response against specific criteria.
+
+ORIGINAL QUESTION:
+{prompt}
+
+MODEL'S RESPONSE:
+{response}
+
+CRITERIA TO EVALUATE:
+{chr(10).join(f"{i+1}. {c}" for i, c in enumerate(criteria))}
+
+For each criterion, determine if the response meets it (1) or not (0).
+Respond with ONLY valid JSON in this exact format:
+{{"scores": [<list of 0 or 1 for each criterion>], "explanations": [<brief explanation for each>]}}"""
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "HTTP-Referer": "",
+            "X-Title": "MA_Eval_Grader",
+        }
+
+        data = {
+            "model": model,
+            "messages": [{"role": "user", "content": grading_prompt}],
+            "temperature": 0,
+        }
+
+        for attempt in range(self.max_retries):
+            try:
+                async with self.session.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json=data,
+                ) as resp:
+                    result = await resp.json()
+
+                    if "error" in result:
+                        if attempt < self.max_retries - 1:
+                            await asyncio.sleep((2 ** attempt) * 2)
+                            continue
+                        return None
+
+                    if "choices" not in result or not result["choices"]:
+                        return None
+
+                    content = result["choices"][0]["message"].get("content", "")
+                    # Extract JSON from response (handle markdown code blocks)
+                    json_match = re.search(r'\{[^{}]*"scores"[^{}]*\}', content, re.DOTALL)
+                    if json_match:
+                        return json.loads(json_match.group())
+                    # Try parsing entire content as JSON
+                    return json.loads(content)
+
+            except (json.JSONDecodeError, asyncio.TimeoutError, Exception) as e:
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep((2 ** attempt) * 2)
+                else:
+                    tqdm.write(f"Grading failed: {e}")
+                    return None
+        return None
+
 
 async def run_single_task(
     client: LLMClient,
@@ -368,23 +463,100 @@ async def run_single_task(
             return TaskResult(key=key, prompt=prompt, error=str(e))
 
 
+async def grade_result(
+    client: LLMClient,
+    semaphore: asyncio.Semaphore,
+    result: TaskResult,
+    criteria: list[str],
+    weights: list[float],
+    grader_model: str,
+) -> TaskResult:
+    """Grade a result against criteria."""
+    async with semaphore:
+        if result.error or not result.content:
+            # Can't grade errors or empty responses
+            result.criteria_scores = [0.0] * len(criteria)
+            result.criteria_explanations = ["No response to grade"] * len(criteria)
+            result.overall_score = 0.0
+            return result
+
+        grade_result = await client.grade(result.prompt, result.content, criteria, grader_model)
+
+        if grade_result and "scores" in grade_result:
+            scores = [float(s) for s in grade_result["scores"]]
+            # Pad or truncate to match criteria length
+            while len(scores) < len(criteria):
+                scores.append(0.0)
+            scores = scores[:len(criteria)]
+
+            explanations = grade_result.get("explanations", [])
+            while len(explanations) < len(criteria):
+                explanations.append("")
+            explanations = explanations[:len(criteria)]
+
+            result.criteria_scores = scores
+            result.criteria_explanations = explanations
+
+            # Calculate weighted score
+            total_weight = sum(weights)
+            if total_weight > 0:
+                result.overall_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
+            else:
+                result.overall_score = sum(scores) / len(scores) if scores else 0.0
+        else:
+            # Grading failed
+            result.criteria_scores = None
+            result.criteria_explanations = None
+            result.overall_score = None
+
+        return result
+
+
+class ScoreTracker:
+    """Track running score statistics."""
+    def __init__(self):
+        self.total_score = 0.0
+        self.count = 0
+
+    def add(self, score: float | None):
+        if score is not None:
+            self.total_score += score
+            self.count += 1
+
+    @property
+    def average(self) -> float:
+        return self.total_score / self.count if self.count > 0 else 0.0
+
+
 async def run_harness(args: argparse.Namespace):
-    """Main harness loop."""
+    """Main harness loop with concurrent grading."""
     dataset = load_dataset(args.dataset)
     prompts = dataset.get("prompts", dataset.get("results", []))
+
+    # Build prompt lookup for criteria
+    prompt_lookup: dict[str, dict] = {}
+    for p in prompts:
+        pid = p.get("prompt_id", p.get("id", "unknown"))
+        prompt_lookup[pid] = p
 
     progress = load_progress(args.output)
     print(f"Loaded {len(progress.results)} existing results from {args.output}")
 
-    # Build task queue
+    # Find ungraded results that need grading
+    ungraded: list[TaskResult] = []
+    for result in progress.results.values():
+        if result.content and not result.is_graded() and not result.error:
+            ungraded.append(result)
+
+    if ungraded:
+        print(f"Found {len(ungraded)} ungraded responses to grade")
+
+    # Build task queue for new responses
     tasks_to_run: list[tuple[TaskKey, str, str, dict | None]] = []
     for model_spec in args.models:
-        # Parse model:config syntax
         model, reasoning_config = parse_model_spec(model_spec)
-        # Use model ID as display name (last part after /, plus config if specified)
         model_name = model.split("/")[-1] if "/" in model else model
         if reasoning_config:
-            # Format: model:high or model:16000
             cfg_str = reasoning_config.get("effort") or str(reasoning_config.get("max_tokens", ""))
             model_name = f"{model_name}:{cfg_str}"
         for prompt_data in prompts[:args.limit] if args.limit > 0 else prompts:
@@ -395,9 +567,12 @@ async def run_harness(args: argparse.Namespace):
                 if not progress.has_result(key):
                     tasks_to_run.append((key, prompt_text, model, reasoning_config))
 
-    total_tasks = len(tasks_to_run)
-    print(f"Total tasks to run: {total_tasks}")
-    if not tasks_to_run:
+    total_query_tasks = len(tasks_to_run)
+    total_grade_tasks = len(ungraded) + total_query_tasks  # Each query also needs grading
+
+    print(f"Tasks: {total_query_tasks} queries + {len(ungraded)} pending grades")
+
+    if total_query_tasks == 0 and len(ungraded) == 0:
         print("All tasks already completed!")
         return
 
@@ -407,58 +582,133 @@ async def run_harness(args: argparse.Namespace):
     async with aiohttp.ClientSession(timeout=timeout) as session:
         client = LLMClient(session, max_retries=args.max_retries, provider_sort=args.provider_sort)
 
-        pending: set[asyncio.Task] = set()
+        # Track pending tasks by type
+        query_pending: set[asyncio.Task] = set()
+        grade_pending: set[asyncio.Task] = set()
         task_iter = iter(tasks_to_run)
 
-        def feed_tasks(current_pending: set):
+        score_tracker = ScoreTracker()
+
+        # Count already graded for score calculation
+        for result in progress.results.values():
+            if result.is_graded():
+                score_tracker.add(result.overall_score)
+
+        def get_pbar_desc() -> str:
+            return f"Eval [score: {score_tracker.average:.1%}]"
+
+        def feed_query_tasks(current_pending: set):
             nonlocal task_iter
-            while len(current_pending) < args.concurrency:
+            while len(current_pending) + len(grade_pending) < args.concurrency:
                 try:
                     key, prompt_text, model, reasoning_config = next(task_iter)
                     task = asyncio.create_task(
                         run_single_task(client, semaphore, key, prompt_text, model, reasoning_config)
                     )
+                    task.task_type = "query"  # type: ignore
                     task.task_key = key  # type: ignore
                     current_pending.add(task)
                 except StopIteration:
                     break
 
-        feed_tasks(pending)
-        pbar = tqdm(total=total_tasks, desc="Evaluating", unit="task")
+        def feed_grade_tasks(results_to_grade: list[TaskResult]):
+            for result in results_to_grade:
+                if len(query_pending) + len(grade_pending) >= args.concurrency:
+                    break
+                prompt_data = prompt_lookup.get(result.key.prompt_id, {})
+                criteria = prompt_data.get("criteria", [])
+                weights = prompt_data.get("weight", [1.0] * len(criteria))
+                if not criteria:
+                    # No criteria to grade against
+                    result.overall_score = None
+                    continue
+
+                task = asyncio.create_task(
+                    grade_result(client, semaphore, result, criteria, weights, args.grader)
+                )
+                task.task_type = "grade"  # type: ignore
+                task.task_key = result.key  # type: ignore
+                grade_pending.add(task)
+
+        # Start grading ungraded results first
+        feed_grade_tasks(ungraded)
+        ungraded_iter = iter([])  # Already fed
+
+        # Start query tasks
+        feed_query_tasks(query_pending)
+
+        total_tasks = total_query_tasks + total_grade_tasks
+        completed = 0
+        pbar = tqdm(total=total_tasks, desc=get_pbar_desc(), unit="task")
 
         if args.debug:
-            tqdm.write(f"Initial pending: {len(pending)}")
+            tqdm.write(f"Initial: {len(query_pending)} queries, {len(grade_pending)} grades pending")
 
-        while pending:
-            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        while query_pending or grade_pending:
+            all_pending = query_pending | grade_pending
+            done, _ = await asyncio.wait(all_pending, return_when=asyncio.FIRST_COMPLETED)
 
+            results_to_grade: list[TaskResult] = []
             batch_completed = 0
+
+            # Process all immediately available completed tasks
             while True:
                 for task in done:
-                    result = task.result()
-                    progress.add_result(result)
-                    batch_completed += 1
-                    if args.debug:
-                        status = "OK" if result.error is None else f"ERR: {result.error}"
-                        tqdm.write(f"{result.key.prompt_id} @ {result.key.llm}#{result.key.sample_idx}: {status}")
+                    task_type = getattr(task, "task_type", "unknown")
 
-                if pending:
-                    newly_done, pending = await asyncio.wait(pending, timeout=0, return_when=asyncio.FIRST_COMPLETED)
+                    if task_type == "query":
+                        query_pending.discard(task)
+                        result = task.result()
+                        progress.add_result(result)
+                        batch_completed += 1
+
+                        if args.debug:
+                            status = "OK" if result.error is None else f"ERR: {result.error}"
+                            tqdm.write(f"Q: {result.key.prompt_id} @ {result.key.llm}#{result.key.sample_idx}: {status}")
+
+                        # Queue for grading if successful
+                        if result.content and not result.error:
+                            results_to_grade.append(result)
+
+                    elif task_type == "grade":
+                        grade_pending.discard(task)
+                        result = task.result()
+                        progress.add_result(result)  # Update with grade
+                        batch_completed += 1
+                        score_tracker.add(result.overall_score)
+
+                        if args.debug:
+                            score_str = f"{result.overall_score:.0%}" if result.overall_score is not None else "N/A"
+                            tqdm.write(f"G: {result.key.prompt_id} @ {result.key.llm}#{result.key.sample_idx}: {score_str}")
+
+                # Check for more immediately done tasks
+                all_pending = query_pending | grade_pending
+                if all_pending:
+                    newly_done, _ = await asyncio.wait(all_pending, timeout=0, return_when=asyncio.FIRST_COMPLETED)
                     if newly_done:
                         done = newly_done
                         continue
                 break
 
+            # Update progress bar
             pbar.update(batch_completed)
+            pbar.set_description(get_pbar_desc())
+
+            # Save progress
             save_json(progress.to_dict(), args.output)
-            feed_tasks(pending)
+
+            # Feed new grade tasks from completed queries
+            feed_grade_tasks(results_to_grade)
+
+            # Feed new query tasks
+            feed_query_tasks(query_pending)
 
             if args.debug:
-                tqdm.write(f"After feed: {len(pending)} pending")
+                tqdm.write(f"Pending: {len(query_pending)} queries, {len(grade_pending)} grades")
 
         pbar.close()
 
-    print(f"\nCompleted {total_tasks} tasks")
+    print(f"\nCompleted. Final score: {score_tracker.average:.1%} ({score_tracker.count} graded)")
     save_json(progress.to_dict(), args.output)
 
     grouped_path = args.output.replace(".json", "_grouped.json")
@@ -468,7 +718,7 @@ async def run_harness(args: argparse.Namespace):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Async LLM evaluation harness using OpenRouter",
+        description="Async LLM evaluation harness with grading",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -488,6 +738,7 @@ Examples:
     parser.add_argument("--max-retries", type=int, default=8, help="Max retries per request")
     parser.add_argument("--provider-sort", choices=["price", "throughput", "latency"],
                         help="Sort providers (throughput = optimized providers first)")
+    parser.add_argument("--grader", default=DEFAULT_GRADER_MODEL, help="Model for grading responses")
     parser.add_argument("--debug", action="store_true", help="Debug output")
 
     args = parser.parse_args()
