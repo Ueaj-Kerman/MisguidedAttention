@@ -1,13 +1,3 @@
-work/
-backup/
-eval/harness/misguided_attention_v4_long.json
-eval/results_CoT_length/
-misguided_attention_v4_long.json
-eval/results_llamascompared/
-models.js
-responses.js
-data.js
-
 # Python
 .venv/
 __pycache__/
@@ -20,5 +10,6 @@ __pycache__/
 *_progress.json
 *_progress_grouped.json
 
-
-
+# Misc
+work/
+backup/
