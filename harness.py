@@ -777,8 +777,8 @@ Examples:
   python harness.py --models meta-llama/llama-3.1-70b-instruct --provider-sort throughput
 
 Output files:
-  {model}_progress.json  - Intermediate progress (deleted on completion)
-  {model}_results.json   - Final grouped results
+  ./{model}_progress.json      - Intermediate progress (deleted on completion)
+  results/{model}_results.json - Final grouped results
         """,
     )
     parser.add_argument("--dataset", default="data/misguided_attention_v4.scr", help="Path to dataset (.json or .scr)")
@@ -801,7 +801,10 @@ Output files:
     # Handle export-partial mode
     if args.export_partial:
         progress_file = args.export_partial
-        results_file = progress_file.replace("_progress.json", "_results.json")
+        # Results go in output_dir
+        basename = os.path.basename(progress_file).replace("_progress.json", "_results.json")
+        results_file = os.path.join(args.output_dir, basename)
+        os.makedirs(args.output_dir, exist_ok=True)
         export_partial_results(progress_file, results_file)
         return
 
@@ -818,7 +821,7 @@ Output files:
     # Run each model separately with its own output files
     for model_spec in args.models:
         prefix = get_model_prefix(model_spec)
-        progress_file = os.path.join(args.output_dir, f"{prefix}_progress.json")
+        progress_file = f"{prefix}_progress.json"  # Progress in current dir
         results_file = os.path.join(args.output_dir, f"{prefix}_results.json")
 
         # Create a copy of args for this model
