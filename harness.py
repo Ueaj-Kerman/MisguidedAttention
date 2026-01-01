@@ -247,7 +247,9 @@ class LLMClient:
         self.provider_sort = provider_sort
         self.api_key = os.environ.get("OPENROUTER_API_KEY")
         if not self.api_key:
-            raise ValueError("OPENROUTER_API_KEY environment variable not set")
+            print("ERROR: OPENROUTER_API_KEY environment variable not set")
+            print("Set it with: export OPENROUTER_API_KEY='your-key'")
+            raise SystemExit(1)
 
     async def query(self, prompt: str, model: str, reasoning_effort: str | None = None) -> dict | None:
         """Query OpenRouter with model defaults."""
@@ -281,10 +283,14 @@ class LLMClient:
                     result = await resp.json()
 
                     if "error" in result:
+                        err = result["error"]
+                        err_msg = err.get("message", err) if isinstance(err, dict) else err
                         if attempt < self.max_retries - 1:
                             wait = (2 ** attempt) * 2
+                            tqdm.write(f"API error: {err_msg}. Retry {attempt+1}/{self.max_retries} in {wait}s...")
                             await asyncio.sleep(wait)
                             continue
+                        tqdm.write(f"API error (final): {err_msg}")
                         return None
 
                     if "choices" not in result or not result["choices"]:
@@ -311,11 +317,19 @@ class LLMClient:
 
                     return response
 
-            except Exception as e:
+            except asyncio.TimeoutError:
                 if attempt < self.max_retries - 1:
+                    tqdm.write(f"Timeout. Retry {attempt+1}/{self.max_retries}...")
                     await asyncio.sleep((2 ** attempt) * 2)
                 else:
-                    print(f"Failed after {self.max_retries} attempts: {e}")
+                    tqdm.write(f"Timeout after {self.max_retries} attempts")
+                    return None
+            except Exception as e:
+                if attempt < self.max_retries - 1:
+                    tqdm.write(f"Error: {e}. Retry {attempt+1}/{self.max_retries}...")
+                    await asyncio.sleep((2 ** attempt) * 2)
+                else:
+                    tqdm.write(f"Failed after {self.max_retries} attempts: {e}")
                     return None
         return None
 
