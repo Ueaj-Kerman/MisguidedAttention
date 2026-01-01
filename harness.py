@@ -592,12 +592,14 @@ async def run_harness(args: argparse.Namespace):
     for model_spec in args.models:
         model, reasoning_config = parse_model_spec(model_spec)
         model_name = model.split("/")[-1] if "/" in model else model
+        # Replace colons with underscores for filesystem compatibility
+        model_name = model_name.replace(":", "_")
         if reasoning_config:
             if reasoning_config.get("disabled"):
                 cfg_str = "off"
             else:
                 cfg_str = reasoning_config.get("effort") or str(reasoning_config.get("max_tokens", ""))
-            model_name = f"{model_name}:{cfg_str}"
+            model_name = f"{model_name}_{cfg_str}"
         for prompt_data in prompts[:args.limit] if args.limit > 0 else prompts:
             prompt_id = prompt_data.get("prompt_id", prompt_data.get("id", "unknown"))
             prompt_text = prompt_data.get("prompt", prompt_data.get("text", ""))
@@ -797,6 +799,8 @@ def get_model_prefix(model_spec: str) -> str:
     model, reasoning_config = parse_model_spec(model_spec)
     # Get just the model name (after last /)
     name = model.split("/")[-1] if "/" in model else model
+    # Replace colons with underscores for filesystem compatibility
+    name = name.replace(":", "_")
     # Add reasoning suffix if present
     if reasoning_config:
         if reasoning_config.get("disabled"):
