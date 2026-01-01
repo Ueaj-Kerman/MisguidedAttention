@@ -752,7 +752,7 @@ Output files:
     parser.add_argument("--dataset", default="data/misguided_attention_v4.scr", help="Path to dataset (.json or .scr)")
     parser.add_argument("--long", action="store_true", help="Use long dataset (data/misguided_attention_v4_long.scr)")
     parser.add_argument("--models", required=True, nargs="+", help="Model IDs (e.g., google/gemini-2.5-pro)")
-    parser.add_argument("--output-dir", default=".", help="Output directory for results")
+    parser.add_argument("--output-dir", default="results", help="Output directory for results")
     parser.add_argument("--samples", type=int, default=1, help="Samples per prompt-model pair")
     parser.add_argument("--limit", type=int, default=0, help="Limit prompts (0=all)")
     parser.add_argument("--concurrency", type=int, default=10, help="Max concurrent requests")
@@ -765,6 +765,9 @@ Output files:
     args = parser.parse_args()
     if args.long:
         args.dataset = "data/misguided_attention_v4_long.scr"
+
+    # Create output directory if needed
+    os.makedirs(args.output_dir, exist_ok=True)
 
     # Run each model separately with its own output files
     for model_spec in args.models:
