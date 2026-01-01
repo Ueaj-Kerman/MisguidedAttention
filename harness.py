@@ -462,13 +462,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python harness.py --dataset data/prompts.scr --models google/gemini-2.5-pro
-  python harness.py --dataset data/prompts.json --models openai/gpt-4o anthropic/claude-sonnet-4 --samples 3
-  python harness.py --dataset data/prompts.scr --models openai/o3-mini:high openai/o3-mini:low
-  python harness.py --dataset data/prompts.scr --models meta-llama/llama-3.1-70b-instruct --provider-sort throughput
+  python harness.py --models google/gemini-2.5-pro
+  python harness.py --long --models openai/gpt-4o anthropic/claude-sonnet-4 --samples 3
+  python harness.py --models openai/o3-mini:high openai/o3-mini:low
+  python harness.py --models meta-llama/llama-3.1-70b-instruct --provider-sort throughput
         """,
     )
-    parser.add_argument("--dataset", required=True, help="Path to dataset (.json or .scr)")
+    parser.add_argument("--dataset", default="data/misguided_attention_v4.scr", help="Path to dataset (.json or .scr)")
+    parser.add_argument("--long", action="store_true", help="Use long dataset (data/misguided_attention_v4_long.scr)")
     parser.add_argument("--models", required=True, nargs="+", help="Model IDs (e.g., google/gemini-2.5-pro)")
     parser.add_argument("--output", default="progress.json", help="Output file path")
     parser.add_argument("--samples", type=int, default=1, help="Samples per prompt-model pair")
@@ -480,6 +481,8 @@ Examples:
     parser.add_argument("--debug", action="store_true", help="Debug output")
 
     args = parser.parse_args()
+    if args.long:
+        args.dataset = "data/misguided_attention_v4_long.scr"
     asyncio.run(run_harness(args))
 
 
