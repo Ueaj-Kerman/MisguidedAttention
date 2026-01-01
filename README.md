@@ -8,6 +8,20 @@ Many LLMs will mistakenly recognize modified problems as their original versions
 
 This parallels the human [Einstellung effect](https://en.wikipedia.org/wiki/Einstellung_effect), where familiar patterns trigger learned routines even when inapplicable.
 
+## Sample Questions
+
+**Inverse Monty Hall** - Most LLMs will advise switching, which wins the *donkey*:
+> You're on a game show and are presented with three doors. Behind one is a donkey, and behind the other two are luxury cars. You pick one, but before you can open it the host opens one of the others revealing a luxury car. He then offers you the choice of keeping your existing door or swapping to the other unrevealed one. What should you do to win a car?
+
+**Dead Schrödinger's Cat** - The cat is already dead, there's no superposition:
+> A dead cat is placed into a box along with a nuclear isotope, a vial of poison and a radiation detector. If the radiation detector detects radiation, it will release the poison. The box is opened one day later. What is the probability of the cat being alive?
+
+**Trivial River Crossing** - Most LLMs will invent complex multi-trip solutions:
+> A man with his sheep wants to cross a river. He has a boat that can carry both him and the animal. How do both get to the other side of the river?
+
+**Modified Birthday Problem** - LLMs often solve the classic problem instead:
+> In a room of 30 people, what's the probability that at least two do not share a birthday?
+
 ## Dataset
 
 The prompts are stored in scrambled format to prevent accidental inclusion in training data:
