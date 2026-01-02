@@ -284,17 +284,19 @@ def parse_model_spec(model_spec: str) -> tuple[str, dict | None]:
     return model_spec, None
 
 
-# Official providers for open-source models (restrict to these only)
+# Official/preferred providers for models (restrict to these only)
 # Provider names from OpenRouter API /models/{id}/endpoints
+# Can be a single provider string or a list of providers
 OFFICIAL_PROVIDERS = {
     "moonshotai": "Moonshot AI",  # Kimi models
     "z-ai": "Z.AI",               # GLM models
+    "gpt-oss": ["Nebius", "Google", "Together"],  # GPT-OSS models
     # Note: DeepSeek has no official provider on OpenRouter (only third-party hosts)
 }
 
 
-def get_official_provider(model: str) -> str | None:
-    """Get official provider for a model if it should be restricted."""
+def get_official_provider(model: str) -> str | list[str] | None:
+    """Get official provider(s) for a model if it should be restricted."""
     model_lower = model.lower()
     for prefix, provider in OFFICIAL_PROVIDERS.items():
         if model_lower.startswith(prefix + "/") or prefix in model_lower:
@@ -340,9 +342,13 @@ class LLMClient:
         # Provider routing
         official_provider = get_official_provider(model)
         if official_provider:
-            # Restrict to official provider only
+            # Restrict to official provider(s) only
+            if isinstance(official_provider, list):
+                provider_list = official_provider
+            else:
+                provider_list = [official_provider]
             data["provider"] = {
-                "order": [official_provider],
+                "order": provider_list,
                 "allow_fallbacks": False,
             }
         elif self.provider_sort:
