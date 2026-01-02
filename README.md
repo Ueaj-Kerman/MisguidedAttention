@@ -4,6 +4,8 @@ A benchmark for evaluating LLM reasoning in the presence of misleading informati
 
 ## Overview
 
+![scores dark theme](outputs/scores_dark.png)
+
 Many LLMs will mistakenly recognize modified problems as their original versions due to frequent occurrence in training data. Instead of reasoning through the specific details, they respond with memorized solutions to the unmodified problem.
 
 This parallels the human [Einstellung effect](https://en.wikipedia.org/wiki/Einstellung_effect), where familiar patterns trigger learned routines even when inapplicable.
